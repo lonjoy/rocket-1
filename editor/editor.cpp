@@ -167,18 +167,18 @@ static void setDocument(SyncDocument *newDoc)
 {
 	SyncDocument *oldDoc = trackView->getDocument();
 
-	if (oldDoc && oldDoc->clientSocket.connected()) {
+	if (oldDoc && oldDoc->clientSocket && oldDoc->clientSocket->connected()) {
 		// delete old key-frames
 		for (size_t i = 0; i < oldDoc->num_tracks; ++i) {
 			sync_track *t = oldDoc->tracks[i];
 			for (int j = 0; j < t->num_keys; ++j)
-				oldDoc->clientSocket.sendDeleteKeyCommand(t->name, t->keys[j].row);
+				oldDoc->clientSocket->sendDeleteKeyCommand(t->name, t->keys[j].row);
 		}
 
 		if (newDoc) {
 			// add back missing client-tracks
 			std::map<const std::string, size_t>::const_iterator it;
-			for (it = oldDoc->clientSocket.clientTracks.begin(); it != oldDoc->clientSocket.clientTracks.end(); ++it) {
+			for (it = oldDoc->clientSocket->clientTracks.begin(); it != oldDoc->clientSocket->clientTracks.end(); ++it) {
 				int trackIndex = sync_find_track(newDoc, it->first.c_str());
 				if (0 > trackIndex)
 					trackIndex = int(newDoc->createTrack(it->first.c_str()));
@@ -190,7 +190,7 @@ static void setDocument(SyncDocument *newDoc)
 			for (size_t i = 0; i < newDoc->num_tracks; ++i) {
 				sync_track *t = newDoc->tracks[i];
 				for (int j = 0; j < t->num_keys; ++j)
-					newDoc->clientSocket.sendSetKeyCommand(t->name, t->keys[j]);
+					newDoc->clientSocket->sendSetKeyCommand(t->name, t->keys[j]);
 			}
 		}
 	}
@@ -262,7 +262,8 @@ static bool fileSaveAs()
 	if (GetSaveFileNameW(&ofn)) {
 		SyncDocument *doc = trackView->getDocument();
 		if (doc->save(temp)) {
-			doc->clientSocket.sendSaveCommand();
+			if (doc->clientSocket)
+				doc->clientSocket->sendSaveCommand();
 			setWindowFileName(temp);
 			doc->fileName = temp;
 
@@ -283,7 +284,8 @@ static bool fileSave()
 		return fileSaveAs();
 
 	if (!doc->save(doc->fileName)) {
-		doc->clientSocket.sendSaveCommand();
+		if (doc->clientSocket)
+			doc->clientSocket->sendSaveCommand();
 		error("Failed to save file");
 		return false;
 	}
@@ -417,7 +419,8 @@ static LRESULT CALLBACK mainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 			break;
 		
 		case ID_FILE_REMOTEEXPORT:
-			doc->clientSocket.sendSaveCommand();
+			if (doc->clientSocket)
+				doc->clientSocket->sendSaveCommand();
 			break;
 		
 		case ID_RECENTFILES_FILE1:
@@ -552,54 +555,14 @@ static bool readLine(std::string &buf, SOCKET clientSocket)
 {
 	buf.resize(0);
 	while (true) {
-		char ch = '\0';
-		if (recv(clientSocket, &ch, 1, 0) != 1) {
+		char ch;
+		if (recv(clientSocket, &ch, 1, 0) != 1)
 			return false;
-		}
 		if (ch == '\0' || ch == '\n')
 				break;
 		if (ch != '\r')
 				buf.push_back(ch);
 	}
-	return true;
-}
-
-static bool readWebsocketFrame(std::string &buf, SOCKET clientSocket)
-{
-	unsigned char header[2];
-	int flags, opcode, masked, payload_len;
-	unsigned char mask[4] = { 0 };
-
-	if (recv(clientSocket, (char *)header, 2, 0) != 2)
-		return false;
-
-	flags = header[0] >> 4;
-	opcode = header[0] & 0xF;
-	masked = header[1] >> 7;
-	payload_len = header[1] & 0x7f;
-
-	if (payload_len == 126) {
-		unsigned short tmp;
-		if (recv(clientSocket, (char *)&tmp, 2, 0) != 2)
-			return false;
-		payload_len = ntohs(tmp);
-	} else if (payload_len == 127) {
-		// dude, that's one crazy big payload! let's bail!
-		return false;
-	}
-
-	if (masked) {
-		if (recv(clientSocket, (char *)mask, 4, 0) != 4)
-			return false;
-	}
-
-	buf.resize(payload_len);
-	if (recv(clientSocket, &buf[0], payload_len, 0) != payload_len)
-		return false;
-
-	for (int i = 0; i < payload_len; ++i)
-		buf[i] = buf[i] ^ mask[i & 3];
-
 	return true;
 }
 
@@ -614,18 +577,20 @@ BOOL MyCryptBinaryToStringA(const BYTE* pbBinary, DWORD cbBinary, DWORD dwFlags,
 	return CryptBinaryToStringA(pbBinary, cbBinary, dwFlags, pszString, pcchString);
 }
 
-static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
+static ClientSocket *clientConnect(SOCKET serverSocket, sockaddr_in *host)
 {
+	ClientSocket *ret = NULL;
 	sockaddr_in hostTemp;
 	int hostSize = sizeof(sockaddr_in);
 	SOCKET clientSocket = accept(serverSocket, (sockaddr*)&hostTemp, &hostSize);
-	if (INVALID_SOCKET == clientSocket) return INVALID_SOCKET;
+	if (INVALID_SOCKET == clientSocket)
+		return NULL;
 
 	const char *expectedGreeting = CLIENT_GREET;
 	std::string line;
 	if (!readLine(line, clientSocket)) {
 		closesocket(clientSocket);
-		return INVALID_SOCKET;
+		return NULL;
 	}
 
 	if (!line.compare(0, 4, "GET ")) {
@@ -635,7 +600,7 @@ static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 		while (true) {
 			if (!readLine(line, clientSocket)) {
 				closesocket(clientSocket);
-				return INVALID_SOCKET;
+				return NULL;
 			}
 
 			if (!line.compare(0, 19, "Sec-WebSocket-Key: "))
@@ -648,7 +613,7 @@ static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 
 		if (!key.length()) {
 			closesocket(clientSocket);
-			return INVALID_SOCKET;
+			return NULL;
 		}
 
 		std::string accept = key;
@@ -668,65 +633,71 @@ static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 		    !MyCryptBinaryToStringA(sha1_buf, sha1_len, CRYPT_STRING_BASE64, base64_buf, &base64_len))
 		{
 			closesocket(clientSocket);
-			return INVALID_SOCKET;
+			return NULL;
 		}
 
 		std::string response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ";
 		response.append(base64_buf);
+#if 0
 		if (protocol.length()) {
 			response.append("Sec-WebSocket-Protocol: ");
 			response.append(protocol);
 		}
+#endif
 		response.append("\r\n");
 
 		send(clientSocket, &response[0], response.length(), 0);
 
-		if (!readWebsocketFrame(line, clientSocket)) {
+		ret = new WebSocket(clientSocket);
+
+		line.resize(strlen(expectedGreeting));
+		if (!ret->recv(&line[0], int(strlen(expectedGreeting)), 0)) {
 			closesocket(clientSocket);
-			return INVALID_SOCKET;
+			return NULL;
 		}
-	}
+	} else
+		ret = new ClientSocket(clientSocket);
 
 	if (line.compare(0, strlen(expectedGreeting), expectedGreeting)) {
 		closesocket(clientSocket);
-		return INVALID_SOCKET;
+		return NULL;
 	}
 	const char *greeting = SERVER_GREET;
 	send(clientSocket, greeting, int(strlen(greeting)), 0);
 
 	if (NULL != host) *host = hostTemp;
-	return clientSocket;
+	return ret;
 }
 
 static size_t clientIndex;
-static void processCommand(ClientSocket &sock)
+static void processCommand(ClientSocket *sock)
 {
 	SyncDocument *doc = trackView->getDocument();
 	int strLen, serverIndex, newRow;
 	std::string trackName;
 	const sync_track *t;
 	unsigned char cmd = 0;
-	if (sock.recv((char*)&cmd, 1, 0)) {
+	if (sock->recv((char*)&cmd, 1, 0)) {
 		switch (cmd) {
 		case GET_TRACK:
 			// read data
-			sock.recv((char *)&strLen, sizeof(int), 0);
+			sock->recv((char *)&strLen, sizeof(int), 0);
 			strLen = ntohl(strLen);
-			if (!sock.connected())
+			if (!sock->connected())
 				return;
 
 			if (!strLen) {
-				sock.disconnect();
+				sock->disconnect();
 				InvalidateRect(trackViewWin, NULL, FALSE);
 				return;
 			}
 
 			trackName.resize(strLen);
-			if (!sock.recv(&trackName[0], strLen, 0))
+			if (!sock->recv(&trackName[0], strLen, 0))
 				return;
 
 			if (int(strlen(trackName.c_str())) != strLen) {
-				sock.disconnect();
+				sock->disconnect();
 				InvalidateRect(trackViewWin, NULL, FALSE);
 				return;
 			}
@@ -739,19 +710,21 @@ static void processCommand(ClientSocket &sock)
 				    int(doc->createTrack(trackName));
 
 			// setup remap
-			doc->clientSocket.clientTracks[trackName] = clientIndex++;
+			if (doc->clientSocket)
+				doc->clientSocket->clientTracks[trackName] = clientIndex++;
 
 			// send key-frames
 			t = doc->tracks[serverIndex];
 			for (int i = 0; i < (int)t->num_keys; ++i)
-				doc->clientSocket.sendSetKeyCommand(trackName,
-				    t->keys[i]);
+				if (doc->clientSocket)
+					doc->clientSocket->sendSetKeyCommand(trackName,
+					    t->keys[i]);
 
 			InvalidateRect(trackViewWin, NULL, FALSE);
 			break;
 
 		case SET_ROW:
-			sock.recv((char*)&newRow, sizeof(int), 0);
+			sock->recv((char*)&newRow, sizeof(int), 0);
 			trackView->setEditRow(ntohl(newRow));
 			break;
 		}
@@ -834,8 +807,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
 	bool guiConnected = false;
 	while (!done) {
 		SyncDocument *doc = trackView->getDocument();
-		if (!doc->clientSocket.connected()) {
-			SOCKET clientSocket = INVALID_SOCKET;
+		if (!doc->clientSocket || !doc->clientSocket->connected()) {
 			fd_set fds;
 			FD_ZERO(&fds);
 #pragma warning(suppress: 4127)
@@ -849,32 +821,31 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
 			{
 				SendMessage(statusBarWin, SB_SETTEXT, 0, (LPARAM)"Accepting...");
 				sockaddr_in client;
-				clientSocket = clientConnect(serverSocket, &client);
-				if (INVALID_SOCKET != clientSocket)
-				{
+				doc->clientSocket = clientConnect(serverSocket, &client);
+				if (doc->clientSocket && doc->clientSocket->connected()) {
 					char temp[256];
 					snprintf(temp, 256, "Connected to %s", inet_ntoa(client.sin_addr));
 					SendMessage(statusBarWin, SB_SETTEXT, 0, (LPARAM)temp);
-					doc->clientSocket = ClientSocket(clientSocket);
 					clientIndex = 0;
-					doc->clientSocket.sendPauseCommand(true);
-					doc->clientSocket.sendSetRowCommand(trackView->getEditRow());
+					doc->clientSocket->sendPauseCommand(true);
+					doc->clientSocket->sendSetRowCommand(trackView->getEditRow());
 					guiConnected = true;
-				}
-				else SendMessage(statusBarWin, SB_SETTEXT, 0, (LPARAM)"Not Connected.");
+				} else
+					SendMessage(statusBarWin, SB_SETTEXT, 0, (LPARAM)"Not Connected.");
 			}
 		}
 
-		if (doc->clientSocket.connected()) {
-			ClientSocket &clientSocket = doc->clientSocket;
+		if (doc->clientSocket && doc->clientSocket->connected()) {
+			ClientSocket *clientSocket = doc->clientSocket;
 
 			// look for new commands
-			while (clientSocket.pollRead())
+			while (clientSocket->pollRead())
 				processCommand(clientSocket);
 		}
 
-		if (!doc->clientSocket.connected() && guiConnected) {
-			doc->clientSocket.clientPaused = true;
+		if ((!doc->clientSocket || !doc->clientSocket->connected()) && guiConnected) {
+			if (doc->clientSocket)
+				doc->clientSocket->clientPaused = true;
 			InvalidateRect(trackViewWin, NULL, FALSE);
 			SendMessage(statusBarWin, SB_SETTEXT, 0, (LPARAM)"Not Connected.");
 			guiConnected = false;
