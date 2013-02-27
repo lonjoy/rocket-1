@@ -663,7 +663,7 @@ static ClientSocket *clientConnect(SOCKET serverSocket, sockaddr_in *host)
 		return NULL;
 	}
 	const char *greeting = SERVER_GREET;
-	send(clientSocket, greeting, int(strlen(greeting)), 0);
+	ret->send(greeting, int(strlen(greeting)), 0);
 
 	if (NULL != host) *host = hostTemp;
 	return ret;
