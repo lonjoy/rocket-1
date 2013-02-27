@@ -12,6 +12,7 @@
 #include <shellapi.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <wincrypt.h>
 
 // Windows XP look and feel. Seems to enable Vista look as well.
 #pragma comment(linker, \
@@ -547,6 +548,33 @@ static ATOM registerMainWindowClass(HINSTANCE hInstance)
 	return RegisterClassExW(&wc);
 }
 
+static bool readLine(std::string &buf, SOCKET clientSocket)
+{
+	buf.resize(0);
+	while (true) {
+		char ch = '\0';
+		if (recv(clientSocket, &ch, 1, 0) != 1) {
+			return false;
+		}
+		if (ch == '\0' || ch == '\n')
+				break;
+		if (ch != '\r')
+				buf.push_back(ch);
+	}
+	return true;
+}
+
+BOOL MyCryptBinaryToStringA(const BYTE* pbBinary, DWORD cbBinary, DWORD dwFlags,
+    LPTSTR pszString, DWORD* pcchString)
+{
+	typedef BOOL (WINAPI *T)(const BYTE* pbBinary, DWORD cbBinary, DWORD dwFlags, LPTSTR pszString, DWORD* pcchString);
+	static T CryptBinaryToStringA;
+	if (!CryptBinaryToStringA)
+		CryptBinaryToStringA = (T)GetProcAddress(LoadLibrary("crypt32"),
+		    "CryptBinaryToStringA");
+	return CryptBinaryToStringA(pbBinary, cbBinary, dwFlags, pszString, pcchString);
+}
+
 static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 {
 	sockaddr_in hostTemp;
@@ -555,16 +583,74 @@ static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 	if (INVALID_SOCKET == clientSocket) return INVALID_SOCKET;
 
 	const char *expectedGreeting = CLIENT_GREET;
-	char recievedGreeting[128];
-
-	recv(clientSocket, recievedGreeting, int(strlen(expectedGreeting)), 0);
-
-	if (strncmp(expectedGreeting, recievedGreeting, strlen(expectedGreeting)) != 0)
-	{
+	std::string line;
+	if (!readLine(line, clientSocket)) {
 		closesocket(clientSocket);
 		return INVALID_SOCKET;
 	}
 
+	if (!line.compare(0, 4, "GET ")) {
+		// websocket, let's get this party started!
+		std::string key;
+		std::string protocol;
+		while (true) {
+			if (!readLine(line, clientSocket)) {
+				closesocket(clientSocket);
+				return INVALID_SOCKET;
+			}
+
+			if (!line.compare(0, 19, "Sec-WebSocket-Key: "))
+				key = line.substr(19);
+			else if (!line.compare(0, 24, "Sec-WebSocket-Protocol: "))
+				protocol = line.substr(24);
+			else if (!line.length())
+				break;
+		}
+
+		if (!key.length()) {
+			closesocket(clientSocket);
+			return INVALID_SOCKET;
+		}
+
+		std::string accept = key;
+		accept.append("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+
+		HCRYPTPROV prov;
+		HCRYPTHASH hash;
+		unsigned char sha1_buf[21];
+		DWORD sha1_len = 20;
+		char base64_buf[31];
+		DWORD base64_len = 31;
+		if (!CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, 0) ||
+		    !CryptCreateHash(prov, CALG_SHA1, 0, 0, &hash) ||
+		    !CryptHashData(hash, (const BYTE *)&accept[0], accept.length(), 0) ||
+		    !CryptGetHashParam(hash, HP_HASHVAL, sha1_buf, &sha1_len, 0) ||
+		    !MyCryptBinaryToStringA(sha1_buf, sha1_len, CRYPT_STRING_BASE64, base64_buf, &base64_len))
+		{
+			closesocket(clientSocket);
+			return INVALID_SOCKET;
+		}
+
+		std::string response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ";
+		response.append(base64_buf);
+		if (protocol.length()) {
+			response.append("Sec-WebSocket-Protocol: ");
+			response.append(protocol);
+		}
+		response.append("\r\n\r\n");
+
+		send(clientSocket, &response[0], response.length(), 0);
+
+		if (!readLine(line, clientSocket)) {
+			closesocket(clientSocket);
+			return INVALID_SOCKET;
+		}
+	}
+
+	if (line.compare(0, strlen(expectedGreeting), expectedGreeting)) {
+		closesocket(clientSocket);
+		return INVALID_SOCKET;
+	}
 	const char *greeting = SERVER_GREET;
 	send(clientSocket, greeting, int(strlen(greeting)), 0);
 
