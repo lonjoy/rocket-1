@@ -567,15 +567,27 @@ static bool readLine(std::string &buf, SOCKET clientSocket)
 static bool readWebsocketFrame(std::string &buf, SOCKET clientSocket)
 {
 	unsigned char header[2];
+	int flags, opcode, masked, payload_len;
+	unsigned char mask[4] = { 0 };
+
 	if (recv(clientSocket, (char *)header, 2, 0) != 2)
 		return false;
 
-	int flags = header[0] >> 4;
-	int opcode = header[0] & 0xF;
-	int masked = header[1] >> 7;
-	int payload_len = header[1] & 0x7f;
+	flags = header[0] >> 4;
+	opcode = header[0] & 0xF;
+	masked = header[1] >> 7;
+	payload_len = header[1] & 0x7f;
 
-	unsigned char mask[4] = { 0 };
+	if (payload_len == 126) {
+		unsigned short tmp;
+		if (recv(clientSocket, (char *)&tmp, 2, 0) != 2)
+			return false;
+		payload_len = ntohs(tmp);
+	} else if (payload_len == 127) {
+		// dude, that's one crazy big payload! let's bail!
+		return false;
+	}
+
 	if (masked) {
 		if (recv(clientSocket, (char *)mask, 4, 0) != 4)
 			return false;
@@ -587,6 +599,8 @@ static bool readWebsocketFrame(std::string &buf, SOCKET clientSocket)
 
 	for (int i = 0; i < payload_len; ++i)
 		buf[i] = buf[i] ^ mask[i & 3];
+
+	return true;
 }
 
 BOOL MyCryptBinaryToStringA(const BYTE* pbBinary, DWORD cbBinary, DWORD dwFlags,
