@@ -564,6 +564,31 @@ static bool readLine(std::string &buf, SOCKET clientSocket)
 	return true;
 }
 
+static bool readWebsocketFrame(std::string &buf, SOCKET clientSocket)
+{
+	unsigned char header[2];
+	if (recv(clientSocket, (char *)header, 2, 0) != 2)
+		return false;
+
+	int flags = header[0] >> 4;
+	int opcode = header[0] & 0xF;
+	int masked = header[1] >> 7;
+	int payload_len = header[1] & 0x7f;
+
+	unsigned char mask[4] = { 0 };
+	if (masked) {
+		if (recv(clientSocket, (char *)mask, 4, 0) != 4)
+			return false;
+	}
+
+	buf.resize(payload_len);
+	if (recv(clientSocket, &buf[0], payload_len, 0) != payload_len)
+		return false;
+
+	for (int i = 0; i < payload_len; ++i)
+		buf[i] = buf[i] ^ mask[i & 3];
+}
+
 BOOL MyCryptBinaryToStringA(const BYTE* pbBinary, DWORD cbBinary, DWORD dwFlags,
     LPTSTR pszString, DWORD* pcchString)
 {
@@ -638,11 +663,11 @@ static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 			response.append("Sec-WebSocket-Protocol: ");
 			response.append(protocol);
 		}
-		response.append("\r\n\r\n");
+		response.append("\r\n");
 
 		send(clientSocket, &response[0], response.length(), 0);
 
-		if (!readLine(line, clientSocket)) {
+		if (!readWebsocketFrame(line, clientSocket)) {
 			closesocket(clientSocket);
 			return INVALID_SOCKET;
 		}
