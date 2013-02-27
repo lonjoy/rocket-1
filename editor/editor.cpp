@@ -621,7 +621,8 @@ static SOCKET clientConnect(SOCKET serverSocket, sockaddr_in *host)
 		DWORD sha1_len = 20;
 		char base64_buf[31];
 		DWORD base64_len = 31;
-		if (!CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, 0) ||
+		if ((!CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, 0) &&
+		    !CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_NEWKEYSET)) ||
 		    !CryptCreateHash(prov, CALG_SHA1, 0, 0, &hash) ||
 		    !CryptHashData(hash, (const BYTE *)&accept[0], accept.length(), 0) ||
 		    !CryptGetHashParam(hash, HP_HASHVAL, sha1_buf, &sha1_len, 0) ||
