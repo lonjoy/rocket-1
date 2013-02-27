@@ -87,7 +87,7 @@ public:
 	bool send(const char *buffer, size_t length, int flags)
 	{
 		unsigned char header[2];
-		header[0] = 16 | 2;
+		header[0] = 0x80 | 2;
 		header[1] = length < 126 ? (unsigned char)(length) : 126;
 		if (!ClientSocket::send((const char *)header, 2, 0))
 			return false;
