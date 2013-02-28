@@ -651,7 +651,7 @@ static ClientSocket *clientConnect(SOCKET serverSocket, sockaddr_in *host)
 		ret = new WebSocket(clientSocket);
 
 		line.resize(strlen(expectedGreeting));
-		if (!ret->recv(&line[0], int(strlen(expectedGreeting)), 0)) {
+		if (!ret->recv(&line[0], strlen(expectedGreeting))) {
 			closesocket(clientSocket);
 			return NULL;
 		}
@@ -663,7 +663,7 @@ static ClientSocket *clientConnect(SOCKET serverSocket, sockaddr_in *host)
 		return NULL;
 	}
 	const char *greeting = SERVER_GREET;
-	ret->send(greeting, int(strlen(greeting)), 0);
+	ret->send(greeting, strlen(greeting));
 
 	if (NULL != host) *host = hostTemp;
 	return ret;
@@ -677,11 +677,11 @@ static void processCommand(ClientSocket *sock)
 	std::string trackName;
 	const sync_track *t;
 	unsigned char cmd = 0;
-	if (sock->recv((char*)&cmd, 1, 0)) {
+	if (sock->recv((char*)&cmd, 1)) {
 		switch (cmd) {
 		case GET_TRACK:
 			// read data
-			sock->recv((char *)&strLen, sizeof(int), 0);
+			sock->recv((char *)&strLen, sizeof(int));
 			strLen = ntohl(strLen);
 			if (!sock->connected())
 				return;
@@ -693,7 +693,7 @@ static void processCommand(ClientSocket *sock)
 			}
 
 			trackName.resize(strLen);
-			if (!sock->recv(&trackName[0], strLen, 0))
+			if (!sock->recv(&trackName[0], strLen))
 				return;
 
 			if (int(strlen(trackName.c_str())) != strLen) {
@@ -724,7 +724,7 @@ static void processCommand(ClientSocket *sock)
 			break;
 
 		case SET_ROW:
-			sock->recv((char*)&newRow, sizeof(int), 0);
+			sock->recv((char*)&newRow, sizeof(int));
 			trackView->setEditRow(ntohl(newRow));
 			break;
 		}

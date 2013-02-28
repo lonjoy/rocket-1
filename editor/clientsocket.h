@@ -18,11 +18,11 @@ public:
 		clientTracks.clear();
 	}
 
-	virtual bool recv(char *buffer, size_t length, int flags)
+	virtual bool recv(char *buffer, size_t length)
 	{
 		if (!connected())
 			return false;
-		int ret = ::recv(socket, buffer, int(length), flags);
+		int ret = ::recv(socket, buffer, int(length), 0);
 		if (ret != int(length)) {
 			disconnect();
 			return false;
@@ -30,11 +30,11 @@ public:
 		return true;
 	}
 
-	virtual bool send(const char *buffer, size_t length, int flags)
+	virtual bool send(const char *buffer, size_t length)
 	{
 		if (!connected())
 			return false;
-		int ret = ::send(socket, buffer, int(length), flags);
+		int ret = ::send(socket, buffer, int(length), 0);
 		if (ret != int(length)) {
 			disconnect();
 			return false;
@@ -67,7 +67,7 @@ public:
 	WebSocket() : ClientSocket(INVALID_SOCKET) {}
 	explicit WebSocket(SOCKET socket) : ClientSocket(socket) {}
 
-	bool recv(char *buffer, size_t length, int flags)
+	bool recv(char *buffer, size_t length)
 	{
 		if (!connected())
 			return false;
@@ -84,12 +84,12 @@ public:
 		return true;
 	}
 
-	bool send(const char *buffer, size_t length, int flags)
+	bool send(const char *buffer, size_t length)
 	{
 		unsigned char header[2];
 		header[0] = 0x80 | 2;
 		header[1] = length < 126 ? (unsigned char)(length) : 126;
-		if (!ClientSocket::send((const char *)header, 2, 0))
+		if (!ClientSocket::send((const char *)header, 2))
 			return false;
 
 		if (length >= 126) {
@@ -97,11 +97,11 @@ public:
 				return false;
 
 			unsigned short tmp = htons(unsigned short(length));
-			if (!ClientSocket::send((const char *)&tmp, 2, 0))
+			if (!ClientSocket::send((const char *)&tmp, 2))
 				return false;
 		}
 
-		return ClientSocket::send(buffer, length, 0);
+		return ClientSocket::send(buffer, length);
 	}
 
 	bool pollRead()
@@ -119,7 +119,7 @@ public:
 		int flags, opcode, masked, payload_len;
 		unsigned char mask[4] = { 0 };
 
-		if (!ClientSocket::recv((char *)header, 2, 0))
+		if (!ClientSocket::recv((char *)header, 2))
 			return false;
 
 		flags = header[0] >> 4;
@@ -129,7 +129,7 @@ public:
 
 		if (payload_len == 126) {
 			unsigned short tmp;
-			if (!ClientSocket::recv((char *)&tmp, 2, 0))
+			if (!ClientSocket::recv((char *)&tmp, 2))
 				return false;
 			payload_len = ntohs(tmp);
 		} else if (payload_len == 127) {
@@ -138,12 +138,12 @@ public:
 		}
 
 		if (masked) {
-			if (!ClientSocket::recv((char *)mask, 4, 0))
+			if (!ClientSocket::recv((char *)mask, 4))
 				return false;
 		}
 
 		buf.resize(payload_len);
-		if (!ClientSocket::recv(&buf[0], payload_len, 0))
+		if (!ClientSocket::recv(&buf[0], payload_len))
 			return false;
 
 		for (int i = 0; i < payload_len; ++i)
