@@ -30,7 +30,7 @@ public:
 		return true;
 	}
 
-	virtual bool send(const char *buffer, size_t length)
+	virtual bool send(const char *buffer, size_t length, bool endOfMessage)
 	{
 		if (!connected())
 			return false;
@@ -84,12 +84,12 @@ public:
 		return true;
 	}
 
-	bool send(const char *buffer, size_t length)
+	bool send(const char *buffer, size_t length, bool endOfMessage)
 	{
 		unsigned char header[2];
-		header[0] = 0x80 | 2;
+		header[0] = (endOfMessage ? 0x80 : 0) | 2;
 		header[1] = length < 126 ? (unsigned char)(length) : 126;
-		if (!ClientSocket::send((const char *)header, 2))
+		if (!ClientSocket::send((const char *)header, 2, false))
 			return false;
 
 		if (length >= 126) {
@@ -97,11 +97,11 @@ public:
 				return false;
 
 			unsigned short tmp = htons(unsigned short(length));
-			if (!ClientSocket::send((const char *)&tmp, 2))
+			if (!ClientSocket::send((const char *)&tmp, 2, false))
 				return false;
 		}
 
-		return ClientSocket::send(buffer, length);
+		return ClientSocket::send(buffer, length, endOfMessage);
 	}
 
 	bool pollRead()
