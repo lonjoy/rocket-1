@@ -135,7 +135,6 @@ int TrackView::getTrackFromX(int x) const
 
 LRESULT TrackView::onCreate()
 {
-//	setFont((HFONT)GetStockObject(SYSTEM_FONT));
 	setFont((HFONT)GetStockObject(SYSTEM_FIXED_FONT));
 
 	setupScrollBars();
@@ -146,8 +145,7 @@ LRESULT TrackView::onPaint()
 {
 	PAINTSTRUCT ps;
 	HDC hdc = BeginPaint(hwnd, &ps);
-	
-//	SelectObject(hdc, GetStockObject(SYSTEM_FIXED_FONT));
+
 	SelectObject(hdc, font);
 	paintTracks(hdc, ps.rcPaint);
 	
